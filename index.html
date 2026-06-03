@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jomok Detector 3000</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+    <style>
+        /* Gaya tambahan untuk efek neon dan UI */
+        .neon-text {
+            text-shadow: 0 0 10px rgba(239, 68, 68, 0.8), 0 0 20px rgba(239, 68, 68, 0.4);
+        }
+        .neon-border {
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.6);
+        }
+        #webcam-container {
+            transform: scaleX(-1); /* Mirror effect agar alami */
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans selection:bg-purple-500">
+
+    <div class="max-w-md w-full bg-slate-900/80 p-6 rounded-3xl border border-slate-800 backdrop-blur-md neon-border text-center">
+        
+        <h1 class="text-3xl font-extrabold tracking-wider bg-gradient-to-r from-red-500 via-purple-500 to-blue-500 bg-clip-text text-transparent mb-1">
+            JOMOK DETECTOR
+        </h1>
+        <p class="text-xs text-slate-400 mb-6 uppercase tracking-widest">Advanced Face Scan Analytics</p>
+
+        <div class="relative w-full aspect-video rounded-2xl overflow-hidden bg-slate-950 border-2 border-purple-500/30 mb-6">
+            <video id="webcam" class="hidden" autoplay playsinline></video>
+            
+            <canvas id="output_canvas" class="w-full h-full object-cover" id="webcam-container"></canvas>
+            
+            <div id="status-overlay" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 transition-opacity duration-500">
+                <div class="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p id="status-text" class="text-sm text-purple-400 font-mono animate-pulse">Memuat AI Model...</p>
+            </div>
+
+            <div id="scanner-line" class="hidden absolute left-0 w-full h-1 bg-gradient-to-r from-transparent via-red-500 to-transparent shadow-[0_0_10px_#ef4444] animate-[bounce_2s_infinite]"></div>
+        </div>
+
+        <div class="space-y-4">
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <div class="text-xs text-slate-500 uppercase tracking-wider mb-1">Status Deteksi Wajah</div>
+                <div id="face-status" class="text-sm font-semibold text-red-400">Wajah tidak terdeteksi</div>
+            </div>
+
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <div class="flex justify-between text-xs text-slate-400 mb-2 font-mono">
+                    <span>KADAR JOMOK:</span>
+                    <span id="jomok-percentage" class="font-bold text-lg text-purple-400">0%</span>
+                </div>
+                <div class="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
+                    <div id="jomok-bar" class="bg-gradient-to-r from-purple-500 to-red-500 h-full w-0 transition-all duration-300 ease-out"></div>
+                </div>
+            </div>
+
+            <div class="p-3 bg-purple-950/30 rounded-xl border border-purple-900/50 min-h-[60px] flex items-center justify-center">
+                <p id="diagnosa" class="text-sm font-medium text-purple-300 italic">Silakan arahkan wajah ke kamera untuk memulai pemindaian...</p>
+            </div>
+        </div>
+
+        <div class="mt-6 text-[10px] text-slate-600 font-mono">
+            Sistem terenkripsi menggunakan algoritma Ambatukam v2.4
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const statusOverlay = document.getElementById('status-overlay');
+        const statusText = document.getElementById('status-text');
+        const faceStatus = document.getElementById('face-status');
+        const jomokPercentage = document.getElementById('jomok-percentage');
+        const jomokBar = document.getElementById('jomok-bar');
+        const diagnosa = document.getElementById('diagnosa');
+        const scannerLine = document.getElementById('scanner-line');
+
+        // Kumpulan respon teks kocak berdasarkan persentase
+        const listDiagnosa = [
+            { max: 20, text: "Aman. Kamu masih lurus selevel jalan tol Cipularang." },
+            { max: 50, text: "Mulai mencurigakan. Sering nonton klip 'Thug Shaker' ya?" },
+            { max: 75, text: "Level Jomok Akut! Terlalu sering ketawa denger nama 'Rusdi' atau 'Mas Imron'." },
+            { max: 100, text: "BAHAYA! Kamu sudah mencapai level Jomok Mutan. Segera kurangi buka medsos!" }
+        ];
+
+        // Variabel untuk animasi angka palsu agar fluktuatif tapi stabil
+        let baseJomokScore = Math.floor(Math.random() * 60) + 25; // Setiap refresh, dapet base score acak (25-85)
+        let lastScore = 0;
+
+        function updateUI(score, faceDetected) {
+            if (!faceDetected) {
+                faceStatus.innerText = "Wajah tidak terdeteksi";
+                faceStatus.className = "text-sm font-semibold text-red-400";
+                jomokPercentage.innerText = "0%";
+                jomokBar.style.width = "0%";
+                diagnosa.innerText = "Silakan arahkan wajah ke kamera untuk memulai pemindaian...";
+                scannerLine.classList.add('hidden');
+                return;
+            }
+
+            scannerLine.classList.remove('hidden');
+            faceStatus.innerText = "TERDETEKSI (Scanning...)";
+            faceStatus.className = "text-sm font-semibold text-green-400";
+
+            // Tambahkan sedikit noise/fluktuasi kecil biar fluktuatif alami layaknya mesin scanner asli
+            let dynamicScore = score + Math.floor(Math.sin(Date.now() / 200) * 3);
+            dynamicScore = Math.max(0, Math.min(100, dynamicScore)); // Batasi 0 - 100
+
+            jomokPercentage.innerText = `${dynamicScore}%`;
+            jomokBar.style.width = `${dynamicScore}%`;
+
+            // Update teks diagnosa berdasarkan score
+            const matchingDiagnosa = listDiagnosa.find(d => dynamicScore <= d.max) || listDiagnosa[listDiagnosa.length - 1];
+            diagnosa.innerText = `"${matchingDiagnosa.text}"`;
+        }
+
+        // Handler saat data dari Face Mesh beres diproses
+        function onResults(results) {
+            // Hilangkan loading overlay saat frame pertama berhasil diproses
+            if (!statusOverlay.classList.contains('hidden')) {
+                statusOverlay.classList.add('hidden');
+            }
+
+            // Set ukuran canvas agar sesuai dengan resolusi video internal
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Gambar frame video ke canvas (di-mirror secara horizontal)
+            canvasCtx.translate(canvasElement.width, 0);
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+
+                // Gambar titik-titik Face Mesh tipis-tipis biar estetik teknologi AI
+                canvasCtx.fillStyle = "rgba(168, 85, 247, 0.6)"; // Warna ungu transparan
+                for (const landmark of landmarks) {
+                    const x = landmark.x * canvasElement.width;
+                    const y = landmark.y * canvasElement.height;
+                    canvasCtx.fillRect(x, y, 1.5, 1.5);
+                }
+
+                // Kalkulasi gimmick ilmiah palsu:
+                // Kita hitung jarak kelopak mata atau bentuk mulut sedikit untuk memengaruhi score dasar
+                const topLip = landmarks[13];
+                const bottomLip = landmarks[14];
+                const lipDistance = Math.abs(topLip.y - bottomLip.y);
+                
+                // Jika mulut terbuka (misal lagi ketawa/cengengesan), score jomok naik sedikit
+                let bonus = lipDistance > 0.03 ? 15 : 0; 
+                
+                updateUI(baseJomokScore + bonus, true);
+            } else {
+                updateUI(0, false);
+            }
+            canvasCtx.restore();
+        }
+
+        // Inisialisasi MediaPipe Face Mesh
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: false,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        // Menghubungkan kamera perangkat ke MediaPipe
+        statusText.innerText = "Meminta izin kamera...";
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+
+        camera.start().catch(err => {
+            statusText.innerText = "Gagal mengakses kamera!";
+            alert("Akses kamera ditolak atau tidak ditemukan. Mohon izinkan kamera untuk mencoba aplikasi.");
+        });
+    </script>
+</body>
+</html>
